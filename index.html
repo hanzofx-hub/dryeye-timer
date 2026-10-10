@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>目の休憩タイマー</title>
+  <meta name="description" content="ドライアイ防止のためのパソコン使用タイマー。作業時間ごとにアラーム、休憩終了時にもう一度アラーム。画面を消しても鳴ります。">
+  <meta name="theme-color" content="#0f172a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="目の休憩">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="app">
+    <header class="top">
+      <h1>目の休憩タイマー</h1>
+      <span id="bg-badge" class="badge" hidden>画面オフでも鳴動中</span>
+    </header>
+
+    <section class="timer-card" id="timer-card" data-phase="idle">
+      <div class="ring-wrap">
+        <svg class="ring" viewBox="0 0 200 200" aria-hidden="true">
+          <circle class="ring-track" cx="100" cy="100" r="88"></circle>
+          <circle class="ring-bar" id="ring-bar" cx="100" cy="100" r="88"></circle>
+        </svg>
+        <div class="ring-center">
+          <div class="phase" id="phase-label">準備OK</div>
+          <div class="time" id="time-label">20:00</div>
+          <div class="next" id="next-label">スタートで計測開始</div>
+        </div>
+      </div>
+
+      <p class="message" id="message">20分ごとに休憩アラーム、休憩終了時にもう一度鳴ります。</p>
+
+      <div class="controls">
+        <button type="button" class="btn primary" id="btn-start">スタート</button>
+        <button type="button" class="btn" id="btn-reset" disabled>リセット</button>
+      </div>
+
+      <dl class="stats">
+        <div><dt>完了した休憩</dt><dd id="stat-cycles">0 回</dd></div>
+        <div><dt>経過時間</dt><dd id="stat-elapsed">0分</dd></div>
+      </dl>
+    </section>
+
+    <section class="panel">
+      <h2>設定</h2>
+      <p class="hint" id="lock-hint" hidden>設定を変更するには、いったんリセットしてください。</p>
+
+      <div class="field">
+        <div class="field-label">
+          <span>作業時間</span>
+          <small>この時間ごとに1回目のアラーム</small>
+        </div>
+        <div class="stepper" data-key="workMin">
+          <button type="button" class="step" data-dir="-1" aria-label="作業時間を減らす">−</button>
+          <output id="out-workMin">20分</output>
+          <button type="button" class="step" data-dir="1" aria-label="作業時間を増やす">＋</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">
+          <span>休憩時間</span>
+          <small>1回目のあと、この時間で2回目のアラーム</small>
+        </div>
+        <div class="stepper" data-key="breakSec">
+          <button type="button" class="step" data-dir="-1" aria-label="休憩時間を減らす">−</button>
+          <output id="out-breakSec">1分</output>
+          <button type="button" class="step" data-dir="1" aria-label="休憩時間を増やす">＋</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="field-label">
+          <span>アラームの長さ</span>
+          <small>1回あたりの鳴動時間</small>
+        </div>
+        <div class="stepper" data-key="alarmSec">
+          <button type="button" class="step" data-dir="-1" aria-label="アラームを短くする">−</button>
+          <output id="out-alarmSec">5秒</output>
+          <button type="button" class="step" data-dir="1" aria-label="アラームを長くする">＋</button>
+        </div>
+      </div>
+
+      <div class="field column">
+        <div class="field-label"><span>音の種類</span></div>
+        <div class="chips" id="sound-chips" role="radiogroup" aria-label="音の種類">
+          <button type="button" class="chip" role="radio" data-sound="chime">チャイム</button>
+          <button type="button" class="chip" role="radio" data-sound="beep">電子音</button>
+          <button type="button" class="chip" role="radio" data-sound="bell">ベル</button>
+        </div>
+      </div>
+
+      <div class="field column">
+        <div class="field-label">
+          <span>音量</span>
+          <output id="out-volume">80%</output>
+        </div>
+        <input type="range" id="in-volume" min="10" max="100" step="5" value="80" aria-label="音量">
+      </div>
+
+      <div class="field column">
+        <div class="field-label"><span>試聴</span></div>
+        <div class="controls small">
+          <button type="button" class="btn" id="btn-test-rest">休憩の合図</button>
+          <button type="button" class="btn" id="btn-test-work">再開の合図</button>
+        </div>
+      </div>
+
+      <label class="field toggle">
+        <div class="field-label">
+          <span>画面を点けたままにする</span>
+          <small>タイマー表示を見続けたいとき用（電池を使います）</small>
+        </div>
+        <input type="checkbox" id="in-wakelock">
+        <span class="switch" aria-hidden="true"></span>
+      </label>
+
+      <button type="button" class="link-btn" id="btn-defaults">初期設定（20分 / 1分）に戻す</button>
+    </section>
+
+    <section class="panel tips">
+      <h2>画面を閉じても鳴らすために</h2>
+      <ul>
+        <li>スタート後は<strong>画面ロック・スリープ・ホーム画面に戻る</strong>のはOKです。ロック画面に再生中の表示が出ていれば動作中です。</li>
+        <li>ブラウザの<strong>タブやアプリ自体を終了</strong>すると止まります。</li>
+        <li>音量は<strong>メディア（音楽）の音量</strong>に従います。iPhoneの消音スイッチがオンでも鳴ります。</li>
+        <li>音楽・動画アプリを再生すると一時停止します。その場合はこの画面で「再開」を押してください。</li>
+        <li>スタート時に短い「再開の合図」が鳴ります（音量確認用）。</li>
+        <li>ホーム画面に追加すると、アプリのようにすぐ起動できます。</li>
+      </ul>
+    </section>
+
+    <footer class="foot">20-20-20ルール：20分ごとに、20フィート（約6m）先を20秒以上見ましょう。</footer>
+  </main>
+
+  <div class="flash" id="flash" aria-hidden="true"></div>
+  <script src="app.js"></script>
+</body>
+</html>
