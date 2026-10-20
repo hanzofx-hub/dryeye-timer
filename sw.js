@@ -1,5 +1,5 @@
 // オフラインでも起動できるようにアプリ本体をキャッシュする（ネット優先・失敗時キャッシュ）
-const CACHE = 'dryeye-timer-v1';
+const CACHE = 'dryeye-timer-v2';
 const ASSETS = [
   './',
   'index.html',

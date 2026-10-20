@@ -134,7 +134,7 @@ button { font: inherit; color: inherit; }
   stroke-linecap: round;
   stroke-dasharray: 552.92;
   stroke-dashoffset: 0;
-  transition: stroke-dashoffset 0.25s linear, stroke 0.3s;
+  transition: stroke 0.3s;
 }
 
 .ring-center {

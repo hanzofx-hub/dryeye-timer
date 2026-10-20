@@ -212,6 +212,7 @@
   }
 
   function pause() {
+    countLoops();
     state = 'paused';
     audio.pause();
     releaseWakeLock();
@@ -246,6 +247,7 @@
   // ロック画面の操作・電話着信・他アプリの再生などによる一時停止/再開に追従
   audio.addEventListener('pause', () => {
     if (state === 'running') {
+      countLoops();
       state = 'paused';
       releaseWakeLock();
       render();
@@ -324,11 +326,17 @@
     }
   }
 
+  // 画面が見えていない間は表示更新を完全に止める（音声だけで動作する）。
+  // 音声再生中のページはブラウザがタイマーを間引かないため、止めないと
+  // 画面オフ中もずっと CPU を起こし続けてしまう。
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
       requestWakeLock();
+      prevPhase = null; // 戻った瞬間に合図の点滅を出さない
       tick();
       updateMediaSession();
+    } else {
+      stopTicking();
     }
   });
 
@@ -405,35 +413,57 @@
     }
   }
 
-  function tick() {
-    if (state === 'idle' || !active) {
-      render();
-      return;
-    }
+  // 画面オフ中は tick が止まるので、何周したかを音声の進みと実時間から推定する
+  function countLoops() {
+    if (state !== 'running' || !active) return;
     const c = cycleOf(active);
     const t = audio.currentTime % c.total;
-
-    if (state === 'running') {
-      // 画面が消えていた間に何周したかを、音声の進みと実時間から推定
-      const now = Date.now();
-      let advanced = t - lastT;
-      const wrapped = advanced < -0.5;
-      if (wrapped) advanced += c.total;
-      const wall = (now - lastWall) / 1000;
-      const extra = Math.max(0, Math.round((wall - advanced) / c.total));
-      loops += (wrapped ? 1 : 0) + extra;
-      lastWall = now;
-    }
+    const now = Date.now();
+    let advanced = t - lastT;
+    const wrapped = advanced < -0.5;
+    if (wrapped) advanced += c.total;
+    const wall = (now - lastWall) / 1000;
+    const extra = Math.max(0, Math.round((wall - advanced) / c.total));
+    loops += (wrapped ? 1 : 0) + extra;
+    lastWall = now;
     lastT = t;
+  }
 
-    const phase = t < c.work ? 'work' : 'rest';
-    if (state === 'running' && prevPhase && phase !== prevPhase && document.visibilityState === 'visible') {
-      flash(phase);
-      updateMediaSession();
+  function tick() {
+    if (state !== 'idle' && active) {
+      countLoops();
+      const c = cycleOf(active);
+      const phase = audio.currentTime % c.total < c.work ? 'work' : 'rest';
+      if (state === 'running' && prevPhase && phase !== prevPhase) {
+        flash(phase);
+        updateMediaSession();
+      }
+      prevPhase = phase;
     }
-    prevPhase = phase;
     render();
   }
+
+  // 表示の秒が切り替わる直後に1回だけ起きる（画面が見えていて動作中のときのみ）
+  let tickTimer = null;
+
+  function stopTicking() {
+    clearTimeout(tickTimer);
+    tickTimer = null;
+  }
+
+  function scheduleTick() {
+    stopTicking();
+    if (state !== 'running' || document.visibilityState !== 'visible') return;
+    const frac = audio.currentTime % 1;
+    tickTimer = setTimeout(tick, Math.round((1 - frac) * 1000) + 30);
+  }
+
+  // 値が変わったときだけ DOM に書き込む
+  function setText(node, text) {
+    if (node.textContent !== text) node.textContent = text;
+  }
+
+  let settingsSig = '';
 
   function render(keepMessage) {
     const s = active || settings;
@@ -442,50 +472,58 @@
     const t = idle ? 0 : (audio.currentTime % c.total) || 0;
     const phase = idle ? 'idle' : (t < c.work ? 'work' : 'rest');
 
-    el.card.dataset.phase = phase;
+    if (el.card.dataset.phase !== phase) el.card.dataset.phase = phase;
 
     let remaining;
     let progress;
     if (phase === 'rest') {
       remaining = c.total - t;
       progress = (t - c.work) / c.rest;
-      el.phase.textContent = state === 'paused' ? '一時停止中（休憩）' : '休憩中';
-      el.next.textContent = '終わると再開の合図';
+      setText(el.phase, state === 'paused' ? '一時停止中（休憩）' : '休憩中');
+      setText(el.next, '終わると再開の合図');
     } else {
       remaining = c.work - t;
       progress = t / c.work;
-      el.phase.textContent = idle ? '準備OK' : state === 'paused' ? '一時停止中' : '作業中';
-      el.next.textContent = idle ? 'スタートで計測開始' : `次の休憩まで（休憩${formatBreak(c.rest)}）`;
+      setText(el.phase, idle ? '準備OK' : state === 'paused' ? '一時停止中' : '作業中');
+      setText(el.next, idle ? 'スタートで計測開始' : `次の休憩まで（休憩${formatBreak(c.rest)}）`);
     }
-    el.time.textContent = mmss(remaining);
-    el.ring.style.strokeDashoffset = String(RING_LEN * Math.min(1, Math.max(0, progress)));
+    setText(el.time, mmss(remaining));
+    const offset = (RING_LEN * Math.min(1, Math.max(0, progress))).toFixed(1);
+    if (el.ring.style.strokeDashoffset !== offset) el.ring.style.strokeDashoffset = offset;
 
     if (!keepMessage) {
       if (stickyMessage && state !== 'running') {
-        el.message.textContent = stickyMessage;
+        setText(el.message, stickyMessage);
       } else {
         stickyMessage = '';
-        el.message.textContent =
+        setText(el.message,
           phase === 'rest' ? '画面から目を離して、遠く（6m以上先）を眺めましょう。まばたきも忘れずに。'
           : state === 'paused' ? '一時停止しています。「再開」で続きから計測します。'
           : state === 'running' ? '画面を消してもOK。時間になると音でお知らせします。'
-          : `${s.workMin}分ごとに休憩の合図、${formatBreak(s.breakSec)}後に再開の合図が鳴ります。`;
+          : `${s.workMin}分ごとに休憩の合図、${formatBreak(s.breakSec)}後に再開の合図が鳴ります。`);
       }
     } else {
-      el.message.textContent = stickyMessage;
+      setText(el.message, stickyMessage);
     }
 
-    el.start.textContent = state === 'running' ? '一時停止' : state === 'paused' ? '再開' : 'スタート';
+    setText(el.start, state === 'running' ? '一時停止' : state === 'paused' ? '再開' : 'スタート');
     el.reset.disabled = idle;
     el.badge.hidden = state !== 'running';
 
     const elapsed = idle ? 0 : loops * c.total + t;
-    el.cycles.textContent = `${idle ? 0 : loops} 回`;
-    el.elapsed.textContent = formatElapsed(elapsed);
+    setText(el.cycles, `${idle ? 0 : loops} 回`);
+    setText(el.elapsed, formatElapsed(elapsed));
 
-    document.title = idle ? '目の休憩タイマー' : `${mmss(remaining)} ${phase === 'rest' ? '休憩中' : '作業中'} | 目の休憩タイマー`;
+    const title = idle ? '目の休憩タイマー' : `${mmss(remaining)} ${phase === 'rest' ? '休憩中' : '作業中'} | 目の休憩タイマー`;
+    if (document.title !== title) document.title = title;
 
-    renderSettings();
+    const sig = state + JSON.stringify(settings);
+    if (sig !== settingsSig) {
+      settingsSig = sig;
+      renderSettings();
+    }
+
+    scheduleTick();
   }
 
   function renderSettings() {
@@ -583,7 +621,6 @@
   });
   el.reset.addEventListener('click', reset);
 
-  setInterval(tick, 250);
   render();
 
   if ('serviceWorker' in navigator && location.protocol === 'https:') {
