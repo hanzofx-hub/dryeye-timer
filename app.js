@@ -160,6 +160,13 @@
   }
 
   /* ---------------- 再生エンジン ---------------- */
+  // スケジュールは「開始時刻（anchor）からの実時間」で決め、音声はそれに再生位置を
+  // 合わせて流すだけにしている。他アプリに音を止められたり、メモリ不足で OS に
+  // ページを破棄されて開き直しになっても、スケジュールはずれずに続き、
+  // 再開時は本来の位置から音が鳴る。
+
+  const RUN_KEY = 'dryeye-timer-run-v1';
+  const RESTORE_LIMIT_MS = 12 * 60 * 60 * 1000; // これより古い実行状態は復元しない
 
   const audio = new Audio();
   audio.loop = true;
@@ -168,11 +175,12 @@
 
   let trackUrl = null;
   let trackKey = '';
-  let active = null;        // 再生中トラックの設定
+  let active = null;        // 実行中タイマーの設定
   let state = 'idle';       // idle | running | paused
-  let loops = 0;            // 完了したサイクル数
-  let lastT = 0;
-  let lastWall = 0;
+  let interrupted = false;  // running なのに音が止められている（他アプリの音声・着信・ページ再読込など）
+  let anchor = 0;           // 経過0秒にあたる時刻（ms）
+  let pausedElapsed = 0;    // 一時停止した時点の経過秒
+  let pendingSeek = false;
   let prevPhase = null;
 
   const keyOf = (s) => [s.workMin, s.breakSec, s.alarmSec, s.sound, s.volume].join('|');
@@ -182,73 +190,110 @@
     return { work, rest: s.breakSec, total: work + s.breakSec };
   }
 
-  function start() {
-    if (state === 'paused') {
-      lastWall = Date.now();
-      audio.play().then(onPlaying).catch(onPlayError);
-      state = 'running';
-      render();
+  function elapsedSec() {
+    if (state === 'running') return Math.max(0, (Date.now() - anchor) / 1000);
+    if (state === 'paused') return pausedElapsed;
+    return 0;
+  }
+
+  function saveRun() {
+    try {
+      if (state === 'idle') localStorage.removeItem(RUN_KEY);
+      else localStorage.setItem(RUN_KEY, JSON.stringify({ state, anchor, pausedElapsed, active, savedAt: Date.now() }));
+    } catch (_) { /* 保存不可でも動作は継続 */ }
+  }
+
+  function ensureTrack(s) {
+    const key = keyOf(s);
+    if (key === trackKey) return;
+    if (trackUrl) URL.revokeObjectURL(trackUrl);
+    trackUrl = URL.createObjectURL(buildCycleTrack(s));
+    trackKey = key;
+    audio.src = trackUrl;
+  }
+
+  // 音声の再生位置を実時間のスケジュールに合わせる
+  function syncPosition(force) {
+    if (!active || state !== 'running') return;
+    if (audio.readyState === 0) {
+      pendingSeek = true;
       return;
     }
-
-    const key = keyOf(settings);
-    if (key !== trackKey) {
-      if (trackUrl) URL.revokeObjectURL(trackUrl);
-      trackUrl = URL.createObjectURL(buildCycleTrack(settings));
-      trackKey = key;
-      audio.src = trackUrl;
-    } else if (audio.readyState > 0) {
-      audio.currentTime = 0;
+    const total = cycleOf(active).total;
+    const target = elapsedSec() % total;
+    const d = Math.abs(audio.currentTime - target);
+    if (force || Math.min(d, total - d) > 1.5) {
+      try { audio.currentTime = target; } catch (_) { /* 読み込み途中は loadedmetadata で再試行 */ }
     }
-    active = { ...settings };
-    loops = 0;
-    lastT = 0;
-    lastWall = Date.now();
-    prevPhase = 'work';
+  }
+
+  audio.addEventListener('loadedmetadata', () => {
+    if (pendingSeek) {
+      pendingSeek = false;
+      syncPosition(true);
+    }
+  });
+
+  // iOS ではタップ処理の中で同期的に play() を呼ぶ必要がある
+  function playAudio() {
+    ensureTrack(active);
+    syncPosition(true);
+    audio.play().then(() => {
+      interrupted = false;
+      updateMediaSession();
+      requestWakeLock();
+      render();
+    }).catch((err) => {
+      console.warn(err);
+      if (state === 'running') interrupted = true;
+      render();
+    });
+  }
+
+  function start() {
+    if (state === 'idle') {
+      active = { ...settings };
+      anchor = Date.now();
+      pausedElapsed = 0;
+      prevPhase = 'work';
+    } else if (state === 'paused') {
+      anchor = Date.now() - pausedElapsed * 1000;
+    }
+    // running のときは「止められた音を戻す」だけ（スケジュールはそのまま）
     state = 'running';
-    // iOS ではタップ処理の中で同期的に play() を呼ぶ必要がある
-    audio.play().then(onPlaying).catch(onPlayError);
+    saveRun();
+    playAudio();
     render();
   }
 
   function pause() {
-    countLoops();
+    pausedElapsed = elapsedSec();
     state = 'paused';
+    interrupted = false;
     audio.pause();
     releaseWakeLock();
+    saveRun();
     render();
   }
 
   function reset() {
     state = 'idle';
+    interrupted = false;
     audio.pause();
-    if (audio.readyState > 0) audio.currentTime = 0;
-    loops = 0;
-    lastT = 0;
     active = null;
+    pausedElapsed = 0;
     prevPhase = null;
     releaseWakeLock();
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'none';
+    saveRun();
     render();
   }
 
-  function onPlaying() {
-    updateMediaSession();
-    requestWakeLock();
-  }
-
-  function onPlayError(err) {
-    console.warn(err);
-    if (state === 'running') state = active && audio.currentTime > 0 ? 'paused' : 'idle';
-    setMessage('音を再生できませんでした。もう一度ボタンを押してください。');
-    render(true);
-  }
-
-  // ロック画面の操作・電話着信・他アプリの再生などによる一時停止/再開に追従
+  // 自分で止めていないのに止まった＝他アプリの音声・着信などで止められた。
+  // スケジュールは進み続け、画面に戻ったときに自動で再開を試みる。
   audio.addEventListener('pause', () => {
     if (state === 'running') {
-      countLoops();
-      state = 'paused';
+      interrupted = true;
       releaseWakeLock();
       render();
     }
@@ -257,8 +302,13 @@
 
   audio.addEventListener('play', () => {
     if (state === 'paused' && active) {
-      state = 'running';
-      lastWall = Date.now();
+      start(); // ロック画面などから再開された
+      return;
+    }
+    if (state === 'running') {
+      // 着信終了後などに OS が自動で再開した場合も、止まっていた分の位置を合わせる
+      interrupted = false;
+      syncPosition();
       requestWakeLock();
       render();
     }
@@ -268,10 +318,30 @@
   // loop が効かない環境向けの保険
   audio.addEventListener('ended', () => {
     if (state === 'running') {
-      audio.currentTime = 0;
-      audio.play().catch(onPlayError);
+      syncPosition(true);
+      audio.play().catch(() => { interrupted = true; render(); });
     }
   });
+
+  // ページが OS に破棄されて開き直された場合に、実行中のタイマーを引き継ぐ
+  function restoreRun() {
+    let saved = null;
+    try { saved = JSON.parse(localStorage.getItem(RUN_KEY) || 'null'); } catch (_) { /* 壊れていたら無視 */ }
+    if (!saved || !saved.active || !['running', 'paused'].includes(saved.state)) return;
+    if (!(Date.now() - saved.savedAt < RESTORE_LIMIT_MS)) {
+      try { localStorage.removeItem(RUN_KEY); } catch (_) { /* 無視 */ }
+      return;
+    }
+    active = normalize(saved.active);
+    anchor = Number(saved.anchor) || Date.now();
+    pausedElapsed = Number(saved.pausedElapsed) || 0;
+    state = saved.state;
+    if (state === 'running') {
+      interrupted = true;
+      // 自動再生が許可されていればそのまま鳴り始める。だめなら「再開」ボタンで戻す
+      playAudio();
+    }
+  }
 
   /* ---------------- メディアセッション（ロック画面表示） ---------------- */
 
@@ -331,8 +401,9 @@
   // 画面オフ中もずっと CPU を起こし続けてしまう。
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') {
-      requestWakeLock();
       prevPhase = null; // 戻った瞬間に合図の点滅を出さない
+      if (state === 'running' && (interrupted || audio.paused)) playAudio();
+      requestWakeLock();
       tick();
       updateMediaSession();
     } else {
@@ -401,9 +472,6 @@
     return `${Math.floor(m / 60)}時間${m % 60}分`;
   }
 
-  let stickyMessage = '';
-  function setMessage(text) { stickyMessage = text; }
-
   function flash(kind) {
     el.flash.classList.remove('on', 'work');
     void el.flash.offsetWidth; // アニメーションを再始動
@@ -414,28 +482,12 @@
     }
   }
 
-  // 画面オフ中は tick が止まるので、何周したかを音声の進みと実時間から推定する
-  function countLoops() {
-    if (state !== 'running' || !active) return;
-    const c = cycleOf(active);
-    const t = audio.currentTime % c.total;
-    const now = Date.now();
-    let advanced = t - lastT;
-    const wrapped = advanced < -0.5;
-    if (wrapped) advanced += c.total;
-    const wall = (now - lastWall) / 1000;
-    const extra = Math.max(0, Math.round((wall - advanced) / c.total));
-    loops += (wrapped ? 1 : 0) + extra;
-    lastWall = now;
-    lastT = t;
-  }
-
   function tick() {
-    if (state !== 'idle' && active) {
-      countLoops();
+    if (state === 'running' && active) {
+      syncPosition();
       const c = cycleOf(active);
-      const phase = audio.currentTime % c.total < c.work ? 'work' : 'rest';
-      if (state === 'running' && prevPhase && phase !== prevPhase) {
+      const phase = elapsedSec() % c.total < c.work ? 'work' : 'rest';
+      if (prevPhase && phase !== prevPhase) {
         flash(phase);
         updateMediaSession();
       }
@@ -455,7 +507,7 @@
   function scheduleTick() {
     stopTicking();
     if (state !== 'running' || document.visibilityState !== 'visible') return;
-    const frac = audio.currentTime % 1;
+    const frac = elapsedSec() % 1;
     tickTimer = setTimeout(tick, Math.round((1 - frac) * 1000) + 30);
   }
 
@@ -466,14 +518,18 @@
 
   let settingsSig = '';
 
-  function render(keepMessage) {
+  function render() {
     const s = active || settings;
     const c = cycleOf(s);
     const idle = state === 'idle' || !active;
-    const t = idle ? 0 : (audio.currentTime % c.total) || 0;
+    const elapsed = idle ? 0 : elapsedSec();
+    const loops = Math.floor(elapsed / c.total);
+    const t = elapsed % c.total;
     const phase = idle ? 'idle' : (t < c.work ? 'work' : 'rest');
+    const silenced = state === 'running' && interrupted;
 
     if (el.card.dataset.phase !== phase) el.card.dataset.phase = phase;
+    el.card.classList.toggle('silenced', silenced);
 
     let remaining;
     let progress;
@@ -492,27 +548,18 @@
     const offset = (RING_LEN * Math.min(1, Math.max(0, progress))).toFixed(1);
     if (el.ring.style.strokeDashoffset !== offset) el.ring.style.strokeDashoffset = offset;
 
-    if (!keepMessage) {
-      if (stickyMessage && state !== 'running') {
-        setText(el.message, stickyMessage);
-      } else {
-        stickyMessage = '';
-        setText(el.message,
-          phase === 'rest' ? '画面から目を離して、遠く（6m以上先）を眺めましょう。まばたきも忘れずに。'
-          : state === 'paused' ? '一時停止しています。「再開」で続きから計測します。'
-          : state === 'running' ? '画面を消してもOK。時間になると音でお知らせします。'
-          : `${s.workMin}分ごとに休憩の合図、${formatBreak(s.breakSec)}後に再開の合図が鳴ります。`);
-      }
-    } else {
-      setText(el.message, stickyMessage);
-    }
+    setText(el.message,
+      silenced ? '他のアプリの音などでアラーム音が止められました。タイマーの時間は進んでいます。「再開」を押すと音が戻ります。'
+      : phase === 'rest' ? '画面から目を離して、遠く（6m以上先）を眺めましょう。まばたきも忘れずに。'
+      : state === 'paused' ? '一時停止しています。「再開」で続きから計測します。'
+      : state === 'running' ? '画面を消してもOK。時間になると音でお知らせします。'
+      : `${s.workMin}分ごとに休憩の合図、${formatBreak(s.breakSec)}後に再開の合図が鳴ります。`);
 
-    setText(el.start, state === 'running' ? '一時停止' : state === 'paused' ? '再開' : 'スタート');
+    setText(el.start, state === 'running' && !interrupted ? '一時停止' : state === 'idle' ? 'スタート' : '再開');
     el.reset.disabled = idle;
-    el.badge.hidden = state !== 'running';
+    el.badge.hidden = !(state === 'running' && !interrupted);
 
-    const elapsed = idle ? 0 : loops * c.total + t;
-    setText(el.cycles, `${idle ? 0 : loops} 回`);
+    setText(el.cycles, `${loops} 回`);
     setText(el.elapsed, formatElapsed(elapsed));
 
     const title = idle ? '目の休憩タイマー' : `${mmss(remaining)} ${phase === 'rest' ? '休憩中' : '作業中'} | 目の休憩タイマー`;
@@ -618,7 +665,7 @@
   });
 
   el.start.addEventListener('click', () => {
-    if (state === 'running') pause(); else start();
+    if (state === 'running' && !interrupted) pause(); else start();
   });
   el.reset.addEventListener('click', reset);
   el.quit.addEventListener('click', quit);
@@ -631,6 +678,7 @@
 
     state = 'idle';
     active = null;
+    saveRun();
     stopTicking();
     releaseWakeLock();
     for (const a of [audio, preview]) {
@@ -656,6 +704,7 @@
     location.replace('ended.html');
   }
 
+  restoreRun();
   render();
 
   if ('serviceWorker' in navigator && location.protocol === 'https:') {

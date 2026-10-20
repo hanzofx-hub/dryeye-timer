@@ -10,6 +10,8 @@
   --rest: #059669;
   --rest-soft: rgba(5, 150, 105, 0.14);
   --idle: #64748b;
+  --warn: #b45309;
+  --warn-soft: rgba(217, 119, 6, 0.12);
   --accent: var(--work);
   --accent-soft: var(--work-soft);
   --on-accent: #ffffff;
@@ -30,6 +32,8 @@
     --rest: #34d399;
     --rest-soft: rgba(52, 211, 153, 0.16);
     --idle: #8190a8;
+    --warn: #fbbf24;
+    --warn-soft: rgba(251, 191, 36, 0.14);
     --on-accent: #0b1120;
     --shadow: none;
     color-scheme: dark;
@@ -48,6 +52,8 @@
   --rest: #34d399;
   --rest-soft: rgba(52, 211, 153, 0.16);
   --idle: #8190a8;
+  --warn: #fbbf24;
+  --warn-soft: rgba(251, 191, 36, 0.14);
   --on-accent: #0b1120;
   --shadow: none;
   color-scheme: dark;
@@ -173,6 +179,14 @@ button { font: inherit; color: inherit; }
 }
 
 .timer-card[data-phase="rest"] .message { color: var(--rest); font-weight: 600; }
+
+.timer-card.silenced .message {
+  color: var(--warn);
+  background: var(--warn-soft);
+  font-weight: 600;
+  padding: 8px 12px;
+  border-radius: 12px;
+}
 
 .controls {
   display: grid;
