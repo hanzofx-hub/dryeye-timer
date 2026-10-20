@@ -205,6 +205,15 @@ button { font: inherit; color: inherit; }
 
 .timer-card[data-phase="idle"] .btn.primary { background: var(--work); border-color: var(--work); }
 
+.btn.quit {
+  width: 100%;
+  min-height: 44px;
+  margin-top: -6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .btn:disabled { opacity: 0.45; cursor: default; }
 .btn:not(:disabled):active { transform: scale(0.98); }
 
@@ -368,7 +377,21 @@ input[type="range"] { width: 100%; accent-color: var(--work); }
 .tips li { margin: 4px 0; }
 .tips strong { color: var(--text); }
 
-.foot { text-align: center; font-size: 0.75rem; color: var(--muted); padding: 0 8px; }
+.ended { margin-top: 24px; }
+.ended p { margin: 0 0 12px; font-size: 0.9rem; color: var(--muted); }
+
+.ended-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 16px;
+  background: var(--work);
+  border-color: var(--work);
+  color: var(--on-accent);
+  text-decoration: none;
+}
+
+.foot {text-align: center; font-size: 0.75rem; color: var(--muted); padding: 0 8px; }
 
 /* ---------- Alarm flash ---------- */
 .flash {

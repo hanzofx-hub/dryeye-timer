@@ -368,6 +368,7 @@
     message: $('message'),
     start: $('btn-start'),
     reset: $('btn-reset'),
+    quit: $('btn-quit'),
     cycles: $('stat-cycles'),
     elapsed: $('stat-elapsed'),
     badge: $('bg-badge'),
@@ -620,6 +621,40 @@
     if (state === 'running') pause(); else start();
   });
   el.reset.addEventListener('click', reset);
+  el.quit.addEventListener('click', quit);
+
+  // 終了：音声・タイマー・ロック画面表示をすべて解放し、ページ自体も破棄する。
+  // Webページはタブやブラウザを強制終了できないため、閉じられない場合は
+  // 軽量な終了ページに置き換えてアプリのメモリを手放す。
+  function quit() {
+    if (state !== 'idle' && !window.confirm('タイマーを止めて終了しますか？')) return;
+
+    state = 'idle';
+    active = null;
+    stopTicking();
+    releaseWakeLock();
+    for (const a of [audio, preview]) {
+      a.pause();
+      a.removeAttribute('src');
+      a.load(); // デコーダと読み込み済みデータを解放
+    }
+    if (trackUrl) URL.revokeObjectURL(trackUrl);
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    trackUrl = previewUrl = null;
+    trackKey = '';
+
+    if ('mediaSession' in navigator) {
+      try {
+        navigator.mediaSession.metadata = null;
+        navigator.mediaSession.playbackState = 'none';
+        ['play', 'pause', 'stop'].forEach((a) => navigator.mediaSession.setActionHandler(a, null));
+      } catch (_) { /* 非対応ブラウザは無視 */ }
+    }
+
+    window.close();
+    // replace なので「戻る」でアプリのページが復元（＝メモリに保持）されることもない
+    location.replace('ended.html');
+  }
 
   render();
 
